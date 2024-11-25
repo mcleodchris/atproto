@@ -70,7 +70,7 @@ public class FirehoseClient(FirehoseOptions options)
 
     private async Task ReceiveAsync()
     {
-        var buffer = new byte[1024 * 1024 * 4];
+        var buffer = new byte[1024 * 32];
 
         while (_webSocket.State == WebSocketState.Open)
         {
