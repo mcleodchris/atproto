@@ -1,6 +1,9 @@
+using System.Formats.Cbor;
 using System.Net.WebSockets;
+using System.Text;
+using IPLD.ContentIdentifier;
+using Multiformats.Base;
 using PeterO.Cbor;
-using ContentIdentifier;
 using Multiformats.Codec;
 using Multiformats.Hash;
 
@@ -99,16 +102,45 @@ public class FirehoseClient(FirehoseOptions options)
                         var ops = Operation.FromCborObject(payload["ops"][0]);
 
                         Console.WriteLine($"OPS is: {ops.Action.ToUpper()} {ops.Path.Split('/').First()} ");
-                        var hash = await Multihash.SumAsync(HashType.SHA2_256, ops.Cid);
-                        var cid = new Cid(MulticodecCode.DagCBOR, hash);
-                        var b32 = new Multiformats.Base.Base32Encoding();
                         
-                        Console.WriteLine($"CID is: {b32.Encode(cid).ToLower()}");
-                        
+                        Cid cid = ExtractCidFromBytes(ops.Cid);
+
+                        var digest = Multibase.EncodeRaw(MultibaseEncoding.Base32Lower, cid);
+                        Console.WriteLine($"CID is: b{digest}");
+
                         Console.WriteLine($"at://{payload["repo"].AsString()}/{ops.Path}");
+
+                        var blocks = payload["blocks"].GetByteString();
+                        using BinaryReader blockReader = new BinaryReader(new MemoryStream(blocks));
+                        uint pragma = blockReader.ReadByte();
+                        var blockHeaderBytes = blockReader.ReadBytes((int)pragma);
                         
-                        // var blocks = payload["blocks"];
-                        // Console.WriteLine($"Blocks is: {blocks.Type}");
+                        var blockHeader = CBORObject.DecodeFromBytes(blockHeaderBytes);
+                        var headerCid = ExtractCidFromBytes(blockHeader["roots"][0].GetByteString());
+                        var headerCidDigest = Multibase.EncodeRaw(MultibaseEncoding.Base32Lower, cid);
+
+                        Console.WriteLine($"Header Cid is: b{headerCidDigest}");
+
+                        // Nothing beyond here is working correctly
+                        var blockLength = blockReader.ReadByte();
+                        
+                        var blockCid = ExtractCidFromBytes(blockReader.ReadBytes(37));
+                        var blockCidDigest = Multibase.EncodeRaw(MultibaseEncoding.Base32Lower, blockCid);
+                        if (blockCidDigest != headerCidDigest)
+                        {
+                            Console.WriteLine($"Block CID b{blockCidDigest} does not match header CID b{headerCidDigest}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Block CID b{blockCidDigest} matches header CID b{headerCidDigest}");
+                        }
+
+                        var blockData = blockReader.ReadBytes(blockLength);
+                        var remainingBytes = blockReader.ReadBytes((int)(blockReader.BaseStream.Length - blockReader.BaseStream.Position));
+                        
+
+
+
 
                         Console.WriteLine("====================================");
 
@@ -126,6 +158,25 @@ public class FirehoseClient(FirehoseOptions options)
         }
     }
 
+    private static Cid ExtractCidFromBytes(byte[] bytes)
+    {
+        const int MULTIHASH_LENGTH = 34; // code ID (SHA_256) + hash length + hash
+        using BinaryReader reader = new BinaryReader(new MemoryStream(bytes));
+        var identifier = reader.ReadByte();
+        var version = reader.ReadByte();
+        var codec = reader.ReadByte();
+        
+        // if position + length is greater than the length of the stream, we have a problem
+        if (reader.BaseStream.Position + MULTIHASH_LENGTH > reader.BaseStream.Length)
+        {
+            throw new Exception("Multihash length exceeds stream length");
+        }
+
+        var multihash = reader.ReadBytes((int)(reader.BaseStream.Position + MULTIHASH_LENGTH));
+
+        return new Cid((MulticodecCode)codec, Multihash.Cast(multihash));
+    }
+
     private static bool VerifyHeader(CBORObject header)
     {
         // simple check we're not getting an error event
@@ -139,4 +190,5 @@ public class FirehoseClient(FirehoseOptions options)
             await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Stopped by client", CancellationToken.None);
         }
     }
+    
 }
